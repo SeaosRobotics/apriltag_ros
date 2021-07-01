@@ -33,10 +33,14 @@
 #include "image_geometry/pinhole_camera_model.h"
 
 #include "common/homography.h"
+#include "tagStandard52h13.h"
 #include "tagStandard41h12.h"
 #include "tag36h11.h"
 #include "tag25h9.h"
 #include "tag16h5.h"
+#include "tagCustom48h12.h"
+#include "tagCircle21h7.h"
+#include "tagCircle49h12.h"
 
 namespace apriltag_ros
 {
@@ -48,6 +52,7 @@ TagDetector::TagDetector(ros::NodeHandle pnh) :
     blur_(getAprilTagOption<double>(pnh, "tag_blur", 0.0)),
     refine_edges_(getAprilTagOption<int>(pnh, "tag_refine_edges", 1)),
     debug_(getAprilTagOption<int>(pnh, "tag_debug", 0)),
+    max_hamming_distance_(getAprilTagOption<int>(pnh, "max_hamming_dist", 2)),
     publish_tf_(getAprilTagOption<bool>(pnh, "publish_tf", false))
 {
   // Parse standalone tag descriptions specified by user (stored on ROS
@@ -102,7 +107,15 @@ TagDetector::TagDetector(ros::NodeHandle pnh) :
 
   // Define the tag family whose tags should be searched for in the camera
   // images
-  if (family_ == "tag36h11")
+  if (family_ == "tagStandard52h13")
+  {
+    tf_ = tagStandard52h13_create();
+  }
+  else if (family_ == "tagStandard41h12")
+  {
+    tf_ = tagStandard41h12_create();
+  }
+  else if (family_ == "tag36h11")
   {
     tf_ = tag36h11_create();
   }
@@ -114,9 +127,17 @@ TagDetector::TagDetector(ros::NodeHandle pnh) :
   {
     tf_ = tag16h5_create();
   }
-  else if (family_ == "tagStandard41h12")
+  else if (family_ == "tagCustom48h12")
   {
-    tf_ = tagStandard41h12_create();
+    tf_ = tagCustom48h12_create();
+  }
+  else if (family_ == "tagCircle21h7")
+  {
+    tf_ = tagCircle21h7_create();
+  }
+  else if (family_ == "tagCircle49h12")
+  {
+    tf_ = tagCircle49h12_create();
   }
   else
   {
@@ -126,7 +147,7 @@ TagDetector::TagDetector(ros::NodeHandle pnh) :
 
   // Create the AprilTag 2 detector
   td_ = apriltag_detector_create();
-  apriltag_detector_add_family(td_, tf_);
+  apriltag_detector_add_family_bits(td_, tf_, max_hamming_distance_);
   td_->quad_decimate = (float)decimate_;
   td_->quad_sigma = (float)blur_;
   td_->nthreads = threads_;
@@ -152,7 +173,15 @@ TagDetector::~TagDetector() {
   apriltag_detections_destroy(detections_);
 
   // free memory associated with tag family
-  if (family_ == "tag36h11")
+  if (family_ == "tagStandard52h13")
+  {
+    tagStandard52h13_destroy(tf_);
+  }
+  else if (family_ == "tagStandard41h12")
+  {
+    tagStandard41h12_destroy(tf_);
+  }
+  else if (family_ == "tag36h11")
   {
     tag36h11_destroy(tf_);
   }
@@ -164,9 +193,17 @@ TagDetector::~TagDetector() {
   {
     tag16h5_destroy(tf_);
   }
-  else if (family_ == "tagStandard41h12")
+  else if (family_ == "tagCustom48h12")
   {
-    tagStandard41h12_destroy(tf_);
+    tagCustom48h12_destroy(tf_);
+  }
+  else if (family_ == "tagCircle21h7")
+  {
+    tagCircle21h7_destroy(tf_);
+  }
+  else if (family_ == "tagCircle49h12")
+  {
+    tagCircle49h12_destroy(tf_);
   }
 }
 
@@ -266,7 +303,7 @@ AprilTagDetectionArray TagDetector::detectTags (
     if (!findStandaloneTagDescription(tagID, standaloneDescription,
                                       !is_part_of_bundle))
     {
-      continue; 
+      continue;
     }
 
     //=================================================================
@@ -301,7 +338,7 @@ AprilTagDetectionArray TagDetector::detectTags (
                                                      fx, fy, cx, cy);
     Eigen::Matrix3d rot = transform.block(0, 0, 3, 3);
     Eigen::Quaternion<double> rot_quaternion(rot);
-    
+
     geometry_msgs::PoseWithCovarianceStamped tag_pose =
         makeTagPose(transform, rot_quaternion, image->header);
 
@@ -645,14 +682,14 @@ std::vector<TagBundleDescription > TagDetector::parseTagBundles (
     }
     TagBundleDescription bundle_i(bundleName);
     ROS_INFO("Loading tag bundle '%s'",bundle_i.name().c_str());
-    
+
     ROS_ASSERT(bundle_description["layout"].getType() ==
                XmlRpc::XmlRpcValue::TypeArray);
     XmlRpc::XmlRpcValue& member_tags = bundle_description["layout"];
 
     // Loop through each member tag of the bundle
     for (int32_t j=0; j<member_tags.size(); j++)
-    {      
+    {
       ROS_ASSERT(member_tags[j].getType() == XmlRpc::XmlRpcValue::TypeStruct);
       XmlRpc::XmlRpcValue& tag = member_tags[j];
 
@@ -667,9 +704,9 @@ std::vector<TagBundleDescription > TagDetector::parseTagBundles (
       StandaloneTagDescription* standaloneDescription;
       if (findStandaloneTagDescription(id, standaloneDescription, false))
       {
-        ROS_ASSERT(size == standaloneDescription->size()); 
+        ROS_ASSERT(size == standaloneDescription->size());
       }
-      
+
       // Get this tag's pose with respect to the bundle origin
       double x  = xmlRpcGetDoubleWithDefault(tag, "x", 0.);
       double y  = xmlRpcGetDoubleWithDefault(tag, "y", 0.);
