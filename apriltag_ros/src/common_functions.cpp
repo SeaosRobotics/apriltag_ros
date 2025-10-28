@@ -493,7 +493,7 @@ Eigen::Matrix4d TagDetector::getRelativeTransform(
   std::vector<cv::Mat> rvecs, tvecs;
 
   cv::solvePnPGeneric(objectPoints, imagePoints, cameraMatrix, distCoeffs,
-                      rvecs, tvecs, false, cv::SOLVEPNP_IPPE_SQUARE);
+                      rvecs, tvecs, false, cv::SOLVEPNP_IPPE);
 
   // select solution with tag in front of camera (positive Z in camera frame)
   cv::Mat rvec, tvec;
