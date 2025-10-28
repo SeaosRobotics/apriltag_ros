@@ -28,7 +28,7 @@
  * policies, either expressed or implied, of the California Institute of
  * Technology.
  */
-
+#include <opencv2/core/eigen.hpp>
 #include "apriltag_ros/common_functions.h"
 #include "image_geometry/pinhole_camera_model.h"
 

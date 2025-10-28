@@ -223,8 +223,8 @@ class TagDetector
   // vector from the camera frame origin to the tag frame origin,
   // expressed in the camera frame.
   Eigen::Matrix4d getRelativeTransform(
-      const std::vector<cv::Point3d > objectPoints,
-      const std::vector<cv::Point2d > imagePoints,
+      const std::vector<cv::Point3d >& objectPoints,
+      const std::vector<cv::Point2d >& imagePoints,
       double fx, double fy, double cx, double cy) const;
   
   void addImagePoints(apriltag_detection_t *detection,
