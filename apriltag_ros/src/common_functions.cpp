@@ -482,31 +482,47 @@ void TagDetector::addImagePoints (
 }
 
 Eigen::Matrix4d TagDetector::getRelativeTransform(
-    std::vector<cv::Point3d > objectPoints,
-    std::vector<cv::Point2d > imagePoints,
-    double fx, double fy, double cx, double cy) const
+  const std::vector<cv::Point3d>& objectPoints,
+  const std::vector<cv::Point2d>& imagePoints,
+  double fx, double fy, double cx, double cy) const
 {
-  // perform Perspective-n-Point camera pose estimation using the
-  // above 3D-2D point correspondences
+  cv::Matx33d cameraMatrix(fx, 0, cx,
+                           0, fy, cy,
+                           0, 0, 1);
+  cv::Vec4f distCoeffs(0, 0, 0, 0);
   cv::Mat rvec, tvec;
-  cv::Matx33d cameraMatrix(fx,  0, cx,
-                           0,  fy, cy,
-                           0,   0,  1);
-  cv::Vec4f distCoeffs(0,0,0,0); // distortion coefficients
-  // TODO Perhaps something like SOLVEPNP_EPNP would be faster? Would
-  // need to first check WHAT is a bottleneck in this code, and only
-  // do this if PnP solution is the bottleneck.
-  cv::solvePnP(objectPoints, imagePoints, cameraMatrix, distCoeffs, rvec, tvec, false, cv::SOLVEPNP_IPPE_SQUARE);
-  cv::Matx33d R;
-  cv::Rodrigues(rvec, R);
-  Eigen::Matrix3d wRo;
-  wRo << R(0,0), R(0,1), R(0,2), R(1,0), R(1,1), R(1,2), R(2,0), R(2,1), R(2,2);
+  std::vector<cv::Mat> rvecs, tvecs;
 
-  Eigen::Matrix4d T; // homogeneous transformation matrix
-  T.topLeftCorner(3, 3) = wRo;
-  T.col(3).head(3) <<
-      tvec.at<double>(0), tvec.at<double>(1), tvec.at<double>(2);
-  T.row(3) << 0,0,0,1;
+  // Get both possible IPPE poses
+  cv::solvePnPGeneric(objectPoints, imagePoints, cameraMatrix, distCoeffs,
+                      rvecs, tvecs, false, cv::SOLVEPNP_IPPE_SQUARE);
+
+  // Choose the solution with positive Z
+  for (int i = 0; i < rvecs.size(); ++i) {
+      if (tvecs[i].at<double>(2) > 0) {
+          rvec = rvecs[i];
+          tvec = tvecs[i];
+          break;
+      }
+  }
+
+  // Convert to rotation matrix
+  cv::Matx33d R_cv;
+  cv::Rodrigues(rvec, R_cv);
+
+  // Convert from object->camera to camera->object
+  R_cv = R_cv.t();
+  tvec = -R_cv * tvec;
+
+  // Convert to Eigen
+  Eigen::Matrix3d R;
+  cv::cv2eigen(R_cv, R);
+
+  // Build homogeneous transform
+  Eigen::Matrix4d T = Eigen::Matrix4d::Identity();
+  T.block<3,3>(0,0) = R;
+  T.block<3,1>(0,3) << tvec.at<double>(0), tvec.at<double>(1), tvec.at<double>(2);
+
   return T;
 }
 
