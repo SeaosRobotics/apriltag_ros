@@ -490,15 +490,14 @@ Eigen::Matrix4d TagDetector::getRelativeTransform(
                            0, fy, cy,
                            0, 0, 1);
   cv::Vec4f distCoeffs(0, 0, 0, 0);
-  cv::Mat rvec, tvec;
   std::vector<cv::Mat> rvecs, tvecs;
 
-  // Get both possible IPPE poses
   cv::solvePnPGeneric(objectPoints, imagePoints, cameraMatrix, distCoeffs,
                       rvecs, tvecs, false, cv::SOLVEPNP_IPPE_SQUARE);
 
-  // Choose the solution with positive Z
-  for (int i = 0; i < rvecs.size(); ++i) {
+  // select solution with tag in front of camera (positive Z in camera frame)
+  cv::Mat rvec, tvec;
+  for (size_t i = 0; i < rvecs.size(); ++i) {
       if (tvecs[i].at<double>(2) > 0) {
           rvec = rvecs[i];
           tvec = tvecs[i];
@@ -506,19 +505,15 @@ Eigen::Matrix4d TagDetector::getRelativeTransform(
       }
   }
 
-  // Convert to rotation matrix
+  // convert to rotation matrix
   cv::Matx33d R_cv;
   cv::Rodrigues(rvec, R_cv);
 
-  // Convert from object->camera to camera->object
-  R_cv = R_cv.t();
-  tvec = -R_cv * tvec;
-
-  // Convert to Eigen
+  // convert to eigen
   Eigen::Matrix3d R;
   cv::cv2eigen(R_cv, R);
 
-  // Build homogeneous transform
+  // build homogeneous transform (tag in camera frame)
   Eigen::Matrix4d T = Eigen::Matrix4d::Identity();
   T.block<3,3>(0,0) = R;
   T.block<3,1>(0,3) << tvec.at<double>(0), tvec.at<double>(1), tvec.at<double>(2);
