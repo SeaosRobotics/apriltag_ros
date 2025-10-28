@@ -28,10 +28,11 @@
  * policies, either expressed or implied, of the California Institute of
  * Technology.
  */
-#include <opencv2/core/eigen.hpp>
+
+
 #include "apriltag_ros/common_functions.h"
 #include "image_geometry/pinhole_camera_model.h"
-
+#include <opencv2/core/eigen.hpp>
 #include "common/homography.h"
 #include "tagStandard52h13.h"
 #include "tagStandard41h12.h"
