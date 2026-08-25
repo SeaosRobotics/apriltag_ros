@@ -2,27 +2,42 @@
 
 `apriltag_ros` is a Robot Operating System (ROS) wrapper of the [AprilTag 3 visual fiducial detector](https://april.eecs.umich.edu/software/apriltag.html). For details and tutorials, please see the [ROS wiki](http://wiki.ros.org/apriltag_ros).
 
-`apriltag_ros` depends on the latest release of the [AprilTag library](https://github.com/AprilRobotics/apriltag). Clone it into your catkin workspace before building.
+`apriltag_ros` depends on the latest release of the [AprilTag library](https://github.com/AprilRobotics/apriltag). Clone it into your workspace before building.
 
 **Authors**: Danylo Malyuta, Wolfgang Merkt
 
 **Maintainers**: [Danylo Malyuta](mailto:danylo.malyuta@gmail.com) ([Autonomous Control Laboratory](https://www.aa.washington.edu/research/acl), University of Washington), [Wolfgang Merkt](https://github.com/wxmerkt)
 
-## Quickstart
+> The `ros2-lyrical-luth` branch is a ROS 2 port (targeting ROS 2 Lyrical Luth,
+> and built/tested against Jazzy Jalisco's toolchain since it is API-compatible)
+> using `ament_cmake`, `rclcpp`/`rclcpp_components`, and `tf2_ros`. The ROS 1
+> (`catkin`) code lives on `master`.
 
-Starting with a working ROS installation (Kinetic and Melodic are supported):
+## Quickstart (ROS 2)
+
+Starting with a working ROS 2 installation:
 ```
-export ROS_DISTRO=melodic               # Set this to your distro, e.g. kinetic or melodic
-source /opt/ros/$ROS_DISTRO/setup.bash  # Source your ROS distro 
-mkdir -p ~/catkin_ws/src                # Make a new workspace 
-cd ~/catkin_ws/src                      # Navigate to the source space
-git clone https://github.com/AprilRobotics/apriltag.git      # Clone Apriltag library
-git clone https://github.com/AprilRobotics/apriltag_ros.git  # Clone Apriltag ROS wrapper
-cd ~/catkin_ws                          # Navigate to the workspace
+export ROS_DISTRO=jazzy                 # Set this to your distro, e.g. jazzy or lyrical
+source /opt/ros/$ROS_DISTRO/setup.bash  # Source your ROS 2 distro
+mkdir -p ~/ros2_ws/src                  # Make a new workspace
+cd ~/ros2_ws/src                        # Navigate to the source space
+git clone https://github.com/AprilRobotics/apriltag.git      # Clone the AprilTag library
+git clone -b ros2-lyrical-luth https://github.com/SeaosRobotics/apriltag_ros.git  # Clone this wrapper
+cd ~/ros2_ws                            # Navigate to the workspace
 rosdep install --from-paths src --ignore-src -r -y  # Install any missing packages
-catkin build    # Build all packages in the workspace (catkin_make_isolated will work also)
+colcon build --symlink-install          # Build all packages in the workspace
+source install/setup.bash
+ros2 launch apriltag_ros continuous_detection.launch.py camera_name:=/your/camera image_topic:=image_rect
 ```
-See the [ROS wiki](http://wiki.ros.org/apriltag_ros) for details and tutorials.
+See the [ROS wiki](http://wiki.ros.org/apriltag_ros) for background and tutorials (written for ROS 1, but the algorithm and topics are unchanged).
+
+### Config file changes vs. ROS 1
+
+ROS 2 parameters can't hold an arbitrary list of dictionaries the way ROS 1's
+XmlRpc-backed parameters could, so `config/tags.yaml`'s `standalone_tags` and
+`tag_bundles` are now described with parallel arrays instead of a list of
+structs. See the comments in `apriltag_ros/config/tags.yaml` for the new
+syntax and an example.
 
 ## Contributing
 
@@ -35,6 +50,7 @@ Pull requests are welcome! Especially for the following areas:
 
 ## Changelog
 
+- On the `ros2-lyrical-luth` branch, the package was ported to ROS 2 (`ament_cmake`, `rclcpp`/`rclcpp_components`, `tf2_ros`); nodelets became composable nodes, launch files became Python, and the tag config format changed (see above).
 - In March 2019, the code was upgraded to AprilTag 3 and as thus the options `refine_pose`, `refine_decode`, and `black_border` were removed.
 
 ## Copyright

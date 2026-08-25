@@ -33,9 +33,8 @@
  * Wrapper class of TagDetector class which calls TagDetector::detectTags on
  * each newly arrived image published by a camera.
  *
- * $Revision: 1.0 $
- * $Date: 2017/12/17 13:25:52 $
- * $Author: dmalyuta $
+ * ROS 2 port: implemented as a composable rclcpp::Node so it can be run
+ * either standalone or loaded into a component container.
  *
  * Originator:        Danylo Malyuta, JPL
  ******************************************************************************/
@@ -47,31 +46,29 @@
 
 #include <memory>
 
-#include <nodelet/nodelet.h>
+#include <rclcpp/rclcpp.hpp>
+#include <image_transport/image_transport.hpp>
 
 namespace apriltag_ros
 {
 
-class ContinuousDetector: public nodelet::Nodelet
+class ContinuousDetector : public rclcpp::Node
 {
  public:
-  ContinuousDetector() = default;
-  ~ContinuousDetector() = default;
+  explicit ContinuousDetector(const rclcpp::NodeOptions & options);
+  ~ContinuousDetector() override = default;
 
-  void onInit();
-
-  void imageCallback(const sensor_msgs::ImageConstPtr& image_rect,
-                     const sensor_msgs::CameraInfoConstPtr& camera_info);
+  void imageCallback(const sensor_msgs::msg::Image::ConstSharedPtr& image_rect,
+                     const sensor_msgs::msg::CameraInfo::ConstSharedPtr& camera_info);
 
  private:
   std::shared_ptr<TagDetector> tag_detector_;
   bool draw_tag_detections_image_;
   cv_bridge::CvImagePtr cv_image_;
 
-  std::shared_ptr<image_transport::ImageTransport> it_;
   image_transport::CameraSubscriber camera_image_subscriber_;
   image_transport::Publisher tag_detections_image_publisher_;
-  ros::Publisher tag_detections_publisher_;
+  rclcpp::Publisher<AprilTagDetectionArray>::SharedPtr tag_detections_publisher_;
 };
 
 } // namespace apriltag_ros

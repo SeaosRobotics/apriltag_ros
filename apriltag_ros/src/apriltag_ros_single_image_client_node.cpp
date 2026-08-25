@@ -29,94 +29,106 @@
  * Technology.
  */
 
-#include "apriltag_ros/common_functions.h"
-#include <apriltag_ros/AnalyzeSingleImage.h>
+#include <rclcpp/rclcpp.hpp>
+#include "apriltag_ros/srv/analyze_single_image.hpp"
 
-bool getRosParameter (ros::NodeHandle& pnh, std::string name, double& param)
+namespace
 {
-  // Write parameter "name" from ROS Parameter Server into param
+bool getRosParameter(rclcpp::Node* node, const std::string& name, double& param)
+{
+  // Write parameter "name" from the ROS parameter server into param
   // Return true if successful, false otherwise
-  if (pnh.hasParam(name.c_str()))
+  if (node->has_parameter(name))
   {
-    pnh.getParam(name.c_str(), param);
-    ROS_INFO_STREAM("Set camera " << name.c_str() << " = " << param);
+    node->get_parameter(name, param);
+    RCLCPP_INFO_STREAM(node->get_logger(), "Set camera " << name.c_str() << " = " << param);
     return true;
   }
   else
   {
-    ROS_ERROR_STREAM("Could not find " << name.c_str() << " parameter!");
+    RCLCPP_ERROR_STREAM(node->get_logger(), "Could not find " << name.c_str() << " parameter!");
     return false;
   }
 }
+} // namespace
 
 int main(int argc, char **argv)
 {
-  ros::init(argc, argv, "apriltag_ros_single_image_client");
+  rclcpp::init(argc, argv);
+  auto node = std::make_shared<rclcpp::Node>("apriltag_ros_single_image_client");
 
-  ros::NodeHandle nh;
-  ros::NodeHandle pnh("~");
+  node->declare_parameter<std::string>("image_load_path", "");
+  node->declare_parameter<std::string>("image_save_path", "");
+  node->declare_parameter<double>("fx", 0.0);
+  node->declare_parameter<double>("fy", 0.0);
+  node->declare_parameter<double>("cx", 0.0);
+  node->declare_parameter<double>("cy", 0.0);
 
-  ros::ServiceClient client =
-      nh.serviceClient<apriltag_ros::AnalyzeSingleImage>(
-          "single_image_tag_detection");
+  auto client = node->create_client<apriltag_ros::srv::AnalyzeSingleImage>(
+      "single_image_tag_detection");
 
   // Get the request parameters
-  apriltag_ros::AnalyzeSingleImage service;
-  service.request.full_path_where_to_get_image =
-      apriltag_ros::getAprilTagOption<std::string>(
-          pnh, "image_load_path", "");
-  if (service.request.full_path_where_to_get_image.empty())
+  auto request = std::make_shared<apriltag_ros::srv::AnalyzeSingleImage::Request>();
+  node->get_parameter("image_load_path", request->full_path_where_to_get_image);
+  if (request->full_path_where_to_get_image.empty())
   {
+    rclcpp::shutdown();
     return 1;
   }
-  service.request.full_path_where_to_save_image =
-      apriltag_ros::getAprilTagOption<std::string>(
-          pnh, "image_save_path", "");
-  if (service.request.full_path_where_to_save_image.empty())
+  node->get_parameter("image_save_path", request->full_path_where_to_save_image);
+  if (request->full_path_where_to_save_image.empty())
   {
+    rclcpp::shutdown();
     return 1;
   }
 
-  // Replicate sensors_msgs/CameraInfo message (must be up-to-date with the
-  // analyzed image!)  
-  service.request.camera_info.distortion_model = "plumb_bob";
+  // Replicate sensor_msgs/CameraInfo message (must be up-to-date with the
+  // analyzed image!)
+  request->camera_info.distortion_model = "plumb_bob";
   double fx, fy, cx, cy;
-  if (!getRosParameter(pnh, "fx", fx))
-    return 1;
-  if (!getRosParameter(pnh, "fy", fy))
-    return 1;
-  if (!getRosParameter(pnh, "cx", cx))
-    return 1;
-  if (!getRosParameter(pnh, "cy", cy))
-    return 1;
+  if (!getRosParameter(node.get(), "fx", fx)) { rclcpp::shutdown(); return 1; }
+  if (!getRosParameter(node.get(), "fy", fy)) { rclcpp::shutdown(); return 1; }
+  if (!getRosParameter(node.get(), "cx", cx)) { rclcpp::shutdown(); return 1; }
+  if (!getRosParameter(node.get(), "cy", cy)) { rclcpp::shutdown(); return 1; }
   // Intrinsic camera matrix for the raw (distorted) images
-  service.request.camera_info.K[0] = fx;
-  service.request.camera_info.K[2] = cx;
-  service.request.camera_info.K[4] = fy;
-  service.request.camera_info.K[5] = cy;
-  service.request.camera_info.K[8] = 1.0;
-  service.request.camera_info.P[0] = fx;
-  service.request.camera_info.P[2] = cx;
-  service.request.camera_info.P[5] = fy;
-  service.request.camera_info.P[6] = cy;
-  service.request.camera_info.P[10] = 1.0;
+  request->camera_info.k[0] = fx;
+  request->camera_info.k[2] = cx;
+  request->camera_info.k[4] = fy;
+  request->camera_info.k[5] = cy;
+  request->camera_info.k[8] = 1.0;
+  request->camera_info.p[0] = fx;
+  request->camera_info.p[2] = cx;
+  request->camera_info.p[5] = fy;
+  request->camera_info.p[6] = cy;
+  request->camera_info.p[10] = 1.0;
 
-  // Call the service (detect tags in the image specified by the
-  // image_load_path)
-  if (client.call(service))
+  if (!client->wait_for_service(std::chrono::seconds(5)))
   {
-    // use parameter run_quielty=false in order to have the service
-    // print out the tag position and orientation
-    if (service.response.tag_detections.detections.size() == 0)
+    RCLCPP_ERROR(node->get_logger(),
+                 "Service single_image_tag_detection not available");
+    rclcpp::shutdown();
+    return 1;
+  }
+
+  // Call the service (detect tags in the image specified by
+  // image_load_path)
+  auto future = client->async_send_request(request);
+  if (rclcpp::spin_until_future_complete(node, future) ==
+      rclcpp::FutureReturnCode::SUCCESS)
+  {
+    auto response = future.get();
+    if (response->tag_detections.detections.size() == 0)
     {
-      ROS_WARN_STREAM("No detected tags!");
+      RCLCPP_WARN_STREAM(node->get_logger(), "No detected tags!");
     }
   }
   else
   {
-    ROS_ERROR("Failed to call service single_image_tag_detection");
+    RCLCPP_ERROR(node->get_logger(), "Failed to call service single_image_tag_detection");
+    rclcpp::shutdown();
     return 1;
   }
 
+  rclcpp::shutdown();
   return 0; // happy ending
 }

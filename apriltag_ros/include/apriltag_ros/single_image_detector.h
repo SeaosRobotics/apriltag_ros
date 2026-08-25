@@ -34,9 +34,7 @@
  * an image stored at a specified load path and stores the output at a specified
  * save path.
  *
- * $Revision: 1.0 $
- * $Date: 2017/12/17 13:33:40 $
- * $Author: dmalyuta $
+ * ROS 2 port: implemented as a composable rclcpp::Node.
  *
  * Originator:        Danylo Malyuta, JPL
  ******************************************************************************/
@@ -45,25 +43,27 @@
 #define APRILTAG_ROS_SINGLE_IMAGE_DETECTOR_H
 
 #include "apriltag_ros/common_functions.h"
-#include <apriltag_ros/AnalyzeSingleImage.h>
+#include "apriltag_ros/srv/analyze_single_image.hpp"
+
+#include <rclcpp/rclcpp.hpp>
 
 namespace apriltag_ros
 {
 
-class SingleImageDetector
+class SingleImageDetector : public rclcpp::Node
 {
- private:
-  TagDetector tag_detector_;
-  ros::ServiceServer single_image_analysis_service_;
-
-  ros::Publisher tag_detections_publisher_;
-  
  public:
-  SingleImageDetector(ros::NodeHandle& nh, ros::NodeHandle& pnh);
+  explicit SingleImageDetector(const rclcpp::NodeOptions & options);
 
   // The function which provides the single image analysis service
-  bool analyzeImage(apriltag_ros::AnalyzeSingleImage::Request& request,
-                     apriltag_ros::AnalyzeSingleImage::Response& response);
+  void analyzeImage(
+      const std::shared_ptr<apriltag_ros::srv::AnalyzeSingleImage::Request> request,
+      std::shared_ptr<apriltag_ros::srv::AnalyzeSingleImage::Response> response);
+
+ private:
+  std::shared_ptr<TagDetector> tag_detector_;
+  rclcpp::Service<apriltag_ros::srv::AnalyzeSingleImage>::SharedPtr single_image_analysis_service_;
+  rclcpp::Publisher<AprilTagDetectionArray>::SharedPtr tag_detections_publisher_;
 };
 
 } // namespace apriltag_ros

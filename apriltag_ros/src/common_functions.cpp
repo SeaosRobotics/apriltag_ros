@@ -30,7 +30,9 @@
  */
 
 #include "apriltag_ros/common_functions.h"
-#include "image_geometry/pinhole_camera_model.h"
+#include "image_geometry/pinhole_camera_model.hpp"
+
+#include <geometry_msgs/msg/transform_stamped.hpp>
 
 #include "common/homography.h"
 #include "tagStandard52h13.h"
@@ -45,64 +47,50 @@
 namespace apriltag_ros
 {
 
-TagDetector::TagDetector(ros::NodeHandle pnh) :
-    family_(getAprilTagOption<std::string>(pnh, "tag_family", "tag36h11")),
-    threads_(getAprilTagOption<int>(pnh, "tag_threads", 4)),
-    decimate_(getAprilTagOption<double>(pnh, "tag_decimate", 1.0)),
-    blur_(getAprilTagOption<double>(pnh, "tag_blur", 0.0)),
-    refine_edges_(getAprilTagOption<int>(pnh, "tag_refine_edges", 1)),
-    debug_(getAprilTagOption<int>(pnh, "tag_debug", 0)),
-    max_hamming_distance_(getAprilTagOption<int>(pnh, "max_hamming_dist", 2)),
-    publish_tf_(getAprilTagOption<bool>(pnh, "publish_tf", false))
+namespace
 {
-  // Parse standalone tag descriptions specified by user (stored on ROS
-  // parameter server)
-  XmlRpc::XmlRpcValue standalone_tag_descriptions;
-  if(!pnh.getParam("standalone_tags", standalone_tag_descriptions))
+// Read a vector<double> parameter, filling in defaultValue for any entries
+// that were not provided (or filling the whole vector with defaultValue if
+// the parameter itself was never set / is the wrong length).
+std::vector<double> getDoubleArrayWithDefault(
+    rclcpp::Node* node, const std::string& name,
+    std::size_t expected_size, double defaultValue)
+{
+  node->declare_parameter<std::vector<double>>(name, std::vector<double>());
+  std::vector<double> values;
+  node->get_parameter(name, values);
+  if (values.size() != expected_size)
   {
-    ROS_WARN("No april tags specified");
+    values.assign(expected_size, defaultValue);
   }
-  else
-  {
-    try
-    {
-      standalone_tag_descriptions_ =
-          parseStandaloneTags(standalone_tag_descriptions);
-    }
-    catch(XmlRpc::XmlRpcException e)
-    {
-      // in case any of the asserts in parseStandaloneTags() fail
-      ROS_ERROR_STREAM("Error loading standalone tag descriptions: " <<
-                       e.getMessage().c_str());
-    }
-  }
+  return values;
+}
+} // namespace
 
-  // parse tag bundle descriptions specified by user (stored on ROS parameter
-  // server)
-  XmlRpc::XmlRpcValue tag_bundle_descriptions;
-  if(!pnh.getParam("tag_bundles", tag_bundle_descriptions))
-  {
-    ROS_WARN("No tag bundles specified");
-  }
-  else
-  {
-    try
-    {
-      tag_bundle_descriptions_ = parseTagBundles(tag_bundle_descriptions);
-    }
-    catch(XmlRpc::XmlRpcException e)
-    {
-      // In case any of the asserts in parseStandaloneTags() fail
-      ROS_ERROR_STREAM("Error loading tag bundle descriptions: " <<
-                       e.getMessage().c_str());
-    }
-  }
+TagDetector::TagDetector(rclcpp::Node* node) :
+    family_(getAprilTagOption<std::string>(node, "tag_family", "tag36h11")),
+    threads_(getAprilTagOption<int>(node, "tag_threads", 4)),
+    decimate_(getAprilTagOption<double>(node, "tag_decimate", 1.0)),
+    blur_(getAprilTagOption<double>(node, "tag_blur", 0.0)),
+    refine_edges_(getAprilTagOption<int>(node, "tag_refine_edges", 1)),
+    debug_(getAprilTagOption<int>(node, "tag_debug", 0)),
+    max_hamming_distance_(getAprilTagOption<int>(node, "max_hamming_dist", 2)),
+    remove_duplicates_(getAprilTagOption<bool>(node, "remove_duplicates", true)),
+    publish_tf_(getAprilTagOption<bool>(node, "publish_tf", false)),
+    logger_(node->get_logger()),
+    clock_(node->get_clock())
+{
+  // Parse standalone tag descriptions specified by user (stored on the ROS
+  // parameter server, under the "standalone_tags.*" namespace)
+  standalone_tag_descriptions_ = parseStandaloneTags(node);
 
-  // Optionally remove duplicate detections in scene. Defaults to removing
-  if(!pnh.getParam("remove_duplicates", remove_duplicates_))
+  // Parse tag bundle descriptions specified by user (stored on the ROS
+  // parameter server, under the "tag_bundles.*" namespace)
+  tag_bundle_descriptions_ = parseTagBundles(node);
+
+  if (publish_tf_)
   {
-    ROS_WARN("remove_duplicates parameter not provided. Defaulting to true");
-    remove_duplicates_ = true;
+    tf_pub_ = std::make_shared<tf2_ros::TransformBroadcaster>(node);
   }
 
   // Define the tag family whose tags should be searched for in the camera
@@ -141,7 +129,7 @@ TagDetector::TagDetector(ros::NodeHandle pnh) :
   }
   else
   {
-    ROS_WARN("Invalid tag family specified! Aborting");
+    RCLCPP_WARN(logger_, "Invalid tag family specified! Aborting");
     exit(1);
   }
 
@@ -202,7 +190,7 @@ TagDetector::~TagDetector() {
 
 AprilTagDetectionArray TagDetector::detectTags (
     const cv_bridge::CvImagePtr& image,
-    const sensor_msgs::CameraInfoConstPtr& camera_info) {
+    const sensor_msgs::msg::CameraInfo::ConstSharedPtr& camera_info) {
   // Convert image to AprilTag code's format
   cv::Mat gray_image;
   if (image->image.channels() == 1)
@@ -211,16 +199,15 @@ AprilTagDetectionArray TagDetector::detectTags (
   }
   else
   {
-    cv::cvtColor(image->image, gray_image, CV_BGR2GRAY);
+    cv::cvtColor(image->image, gray_image, cv::COLOR_BGR2GRAY);
   }
-  image_u8_t apriltag_image = { .width = gray_image.cols,
-                                  .height = gray_image.rows,
-                                  .stride = gray_image.cols,
-                                  .buf = gray_image.data
-  };
+  // image_u8_t's width/height/stride members are const, so this requires
+  // aggregate initialization rather than field-by-field assignment.
+  image_u8_t apriltag_image = { gray_image.cols, gray_image.rows,
+                                 gray_image.cols, gray_image.data };
 
   image_geometry::PinholeCameraModel camera_model;
-  camera_model.fromCameraInfo(camera_info);
+  camera_model.fromCameraInfo(*camera_info);
 
   // Get camera intrinsic properties for rectified image.
   double fx = camera_model.fx(); // focal length in camera x-direction [px]
@@ -332,7 +319,7 @@ AprilTagDetectionArray TagDetector::detectTags (
     Eigen::Matrix3d rot = transform.block(0, 0, 3, 3);
     Eigen::Quaternion<double> rot_quaternion(rot);
 
-    geometry_msgs::PoseWithCovarianceStamped tag_pose =
+    geometry_msgs::msg::PoseWithCovarianceStamped tag_pose =
         makeTagPose(transform, rot_quaternion, image->header);
 
     // Add the detection to the back of the tag detection array
@@ -368,7 +355,7 @@ AprilTagDetectionArray TagDetector::detectTags (
       Eigen::Matrix3d rot = transform.block(0, 0, 3, 3);
       Eigen::Quaternion<double> rot_quaternion(rot);
 
-      geometry_msgs::PoseWithCovarianceStamped bundle_pose =
+      geometry_msgs::msg::PoseWithCovarianceStamped bundle_pose =
           makeTagPose(transform, rot_quaternion, image->header);
 
       // Add the detection to the back of the tag detection array
@@ -383,16 +370,23 @@ AprilTagDetectionArray TagDetector::detectTags (
 
   // If set, publish the transform /tf topic
   if (publish_tf_) {
+    std::vector<geometry_msgs::msg::TransformStamped> tag_transforms;
     for (unsigned int i=0; i<tag_detection_array.detections.size(); i++) {
-      geometry_msgs::PoseStamped pose;
-      pose.pose = tag_detection_array.detections[i].pose.pose.pose;
-      pose.header = tag_detection_array.detections[i].pose.header;
-      tf::Stamped<tf::Transform> tag_transform;
-      tf::poseStampedMsgToTF(pose, tag_transform);
-      tf_pub_.sendTransform(tf::StampedTransform(tag_transform,
-                                                 tag_transform.stamp_,
-                                                 image->header.frame_id,
-                                                 detection_names[i]));
+      const geometry_msgs::msg::PoseWithCovarianceStamped& tag_pose =
+          tag_detection_array.detections[i].pose;
+      geometry_msgs::msg::TransformStamped tag_transform;
+      tag_transform.header = tag_pose.header;
+      tag_transform.header.frame_id = image->header.frame_id;
+      tag_transform.child_frame_id = detection_names[i];
+      tag_transform.transform.translation.x = tag_pose.pose.pose.position.x;
+      tag_transform.transform.translation.y = tag_pose.pose.pose.position.y;
+      tag_transform.transform.translation.z = tag_pose.pose.pose.position.z;
+      tag_transform.transform.rotation = tag_pose.pose.pose.orientation;
+      tag_transforms.push_back(tag_transform);
+    }
+    if (!tag_transforms.empty())
+    {
+      tf_pub_->sendTransform(tag_transforms);
     }
   }
 
@@ -437,7 +431,7 @@ void TagDetector::removeDuplicates ()
       zarray_remove_index(detections_, count, shuffle);
       if (id_current != id_next)
       {
-        ROS_WARN_STREAM("Pruning tag ID " << id_current << " because it "
+        RCLCPP_WARN_STREAM(logger_, "Pruning tag ID " << id_current << " because it "
                         "appears more than once in the image.");
         duplicate_detected = false; // Reset
       }
@@ -510,12 +504,12 @@ Eigen::Matrix4d TagDetector::getRelativeTransform(
   return T;
 }
 
-geometry_msgs::PoseWithCovarianceStamped TagDetector::makeTagPose(
+geometry_msgs::msg::PoseWithCovarianceStamped TagDetector::makeTagPose(
     const Eigen::Matrix4d& transform,
     const Eigen::Quaternion<double> rot_quaternion,
-    const std_msgs::Header& header)
+    const std_msgs::msg::Header& header)
 {
-  geometry_msgs::PoseWithCovarianceStamped pose;
+  geometry_msgs::msg::PoseWithCovarianceStamped pose;
   pose.header = header;
   //===== Position and orientation
   pose.pose.pose.position.x    = transform(0, 3);
@@ -591,43 +585,61 @@ void TagDetector::drawDetections (cv_bridge::CvImagePtr image)
   }
 }
 
-// Parse standalone tag descriptions
+// Parse standalone tag descriptions. Because the ROS 2 parameter system does
+// not support arrays of structs (unlike ROS 1's XmlRpc-backed parameters),
+// the "standalone_tags" description is stored as three parallel arrays:
+//   standalone_tags.ids   (int array, required)
+//   standalone_tags.sizes (double array, required, same length as ids)
+//   standalone_tags.names (string array, optional; empty entries or a
+//                          missing array default to "tag_<id>")
 std::map<int, StandaloneTagDescription> TagDetector::parseStandaloneTags (
-    XmlRpc::XmlRpcValue& standalone_tags)
+    rclcpp::Node* node)
 {
-  // Create map that will be filled by the function and returned in the end
   std::map<int, StandaloneTagDescription> descriptions;
-  // Ensure the type is correct
-  ROS_ASSERT(standalone_tags.getType() == XmlRpc::XmlRpcValue::TypeArray);
-  // Loop through all tag descriptions
-  for (int32_t i = 0; i < standalone_tags.size(); i++)
+
+  node->declare_parameter<std::vector<int64_t>>(
+      "standalone_tags.ids", std::vector<int64_t>());
+  node->declare_parameter<std::vector<double>>(
+      "standalone_tags.sizes", std::vector<double>());
+  node->declare_parameter<std::vector<std::string>>(
+      "standalone_tags.names", std::vector<std::string>());
+
+  std::vector<int64_t> ids;
+  std::vector<double> sizes;
+  std::vector<std::string> names;
+  node->get_parameter("standalone_tags.ids", ids);
+  node->get_parameter("standalone_tags.sizes", sizes);
+  node->get_parameter("standalone_tags.names", names);
+
+  if (ids.empty())
   {
+    RCLCPP_WARN(logger_, "No april tags specified");
+    return descriptions;
+  }
+  if (ids.size() != sizes.size())
+  {
+    RCLCPP_ERROR(logger_, "Error loading standalone tag descriptions: "
+                 "standalone_tags.ids and standalone_tags.sizes must have "
+                 "the same length");
+    return descriptions;
+  }
+  if (!names.empty() && names.size() != ids.size())
+  {
+    RCLCPP_ERROR(logger_, "Error loading standalone tag descriptions: "
+                 "standalone_tags.names must either be empty or have the "
+                 "same length as standalone_tags.ids");
+    names.clear();
+  }
 
-    // i-th tag description
-    XmlRpc::XmlRpcValue& tag_description = standalone_tags[i];
+  for (std::size_t i = 0; i < ids.size(); i++)
+  {
+    int id = static_cast<int>(ids[i]);
+    double size = sizes[i];
 
-    // Assert the tag description is a struct
-    ROS_ASSERT(tag_description.getType() ==
-               XmlRpc::XmlRpcValue::TypeStruct);
-    // Assert type of field "id" is an int
-    ROS_ASSERT(tag_description["id"].getType() ==
-               XmlRpc::XmlRpcValue::TypeInt);
-    // Assert type of field "size" is a double
-    ROS_ASSERT(tag_description["size"].getType() ==
-               XmlRpc::XmlRpcValue::TypeDouble);
-
-    int id = (int)tag_description["id"]; // tag id
-    // Tag size (square, side length in meters)
-    double size = (double)tag_description["size"];
-
-    // Custom frame name, if such a field exists for this tag
     std::string frame_name;
-    if(tag_description.hasMember("name"))
+    if (i < names.size() && !names[i].empty())
     {
-      // Assert type of field "name" is a string
-      ROS_ASSERT(tag_description["name"].getType() ==
-                 XmlRpc::XmlRpcValue::TypeString);
-      frame_name = (std::string)tag_description["name"];
+      frame_name = names[i];
     }
     else
     {
@@ -637,137 +649,99 @@ std::map<int, StandaloneTagDescription> TagDetector::parseStandaloneTags (
     }
 
     StandaloneTagDescription description(id, size, frame_name);
-    ROS_INFO_STREAM("Loaded tag config: " << id << ", size: " <<
+    RCLCPP_INFO_STREAM(logger_, "Loaded tag config: " << id << ", size: " <<
                     size << ", frame_name: " << frame_name.c_str());
-    // Add this tag's description to map of descriptions
     descriptions.insert(std::make_pair(id, description));
   }
 
   return descriptions;
 }
 
-// parse tag bundle descriptions
+// Parse tag bundle descriptions. As with standalone tags, the list-of-struct
+// layout used on ROS 1 is not representable as a single ROS 2 parameter, so
+// bundles are described as:
+//   tag_bundles.names                  (string array, the bundle names)
+//   tag_bundles.<name>.ids             (int array, required)
+//   tag_bundles.<name>.sizes           (double array, required)
+//   tag_bundles.<name>.x/y/z           (double arrays, optional, default 0)
+//   tag_bundles.<name>.qw/qx/qy/qz     (double arrays, optional,
+//                                        default qw=1, qx=qy=qz=0)
 std::vector<TagBundleDescription > TagDetector::parseTagBundles (
-    XmlRpc::XmlRpcValue& tag_bundles)
+    rclcpp::Node* node)
 {
   std::vector<TagBundleDescription > descriptions;
-  ROS_ASSERT(tag_bundles.getType() == XmlRpc::XmlRpcValue::TypeArray);
 
-  // Loop through all tag bundle descritions
-  for (int32_t i=0; i<tag_bundles.size(); i++)
+  node->declare_parameter<std::vector<std::string>>(
+      "tag_bundles.names", std::vector<std::string>());
+  std::vector<std::string> bundle_names;
+  node->get_parameter("tag_bundles.names", bundle_names);
+
+  if (bundle_names.empty())
   {
-    ROS_ASSERT(tag_bundles[i].getType() == XmlRpc::XmlRpcValue::TypeStruct);
-    // i-th tag bundle description
-    XmlRpc::XmlRpcValue& bundle_description = tag_bundles[i];
+    RCLCPP_WARN(logger_, "No tag bundles specified");
+    return descriptions;
+  }
 
-    std::string bundleName;
-    if (bundle_description.hasMember("name"))
-    {
-      ROS_ASSERT(bundle_description["name"].getType() ==
-                 XmlRpc::XmlRpcValue::TypeString);
-      bundleName = (std::string)bundle_description["name"];
-    }
-    else
-    {
-      std::stringstream bundle_name_stream;
-      bundle_name_stream << "bundle_" << i;
-      bundleName = bundle_name_stream.str();
-    }
+  for (std::size_t i = 0; i < bundle_names.size(); i++)
+  {
+    const std::string& bundleName = bundle_names[i];
     TagBundleDescription bundle_i(bundleName);
-    ROS_INFO("Loading tag bundle '%s'",bundle_i.name().c_str());
+    RCLCPP_INFO(logger_, "Loading tag bundle '%s'", bundle_i.name().c_str());
 
-    ROS_ASSERT(bundle_description["layout"].getType() ==
-               XmlRpc::XmlRpcValue::TypeArray);
-    XmlRpc::XmlRpcValue& member_tags = bundle_description["layout"];
+    const std::string prefix = "tag_bundles." + bundleName + ".";
 
-    // Loop through each member tag of the bundle
-    for (int32_t j=0; j<member_tags.size(); j++)
+    node->declare_parameter<std::vector<int64_t>>(
+        prefix + "ids", std::vector<int64_t>());
+    node->declare_parameter<std::vector<double>>(
+        prefix + "sizes", std::vector<double>());
+
+    std::vector<int64_t> ids;
+    std::vector<double> sizes;
+    node->get_parameter(prefix + "ids", ids);
+    node->get_parameter(prefix + "sizes", sizes);
+
+    if (ids.empty() || ids.size() != sizes.size())
     {
-      ROS_ASSERT(member_tags[j].getType() == XmlRpc::XmlRpcValue::TypeStruct);
-      XmlRpc::XmlRpcValue& tag = member_tags[j];
+      RCLCPP_ERROR(logger_, "Error loading tag bundle '%s': %s%s and %s%s "
+                   "must be non-empty and of equal length",
+                   bundleName.c_str(), prefix.c_str(), "ids",
+                   prefix.c_str(), "sizes");
+      continue;
+    }
 
-      ROS_ASSERT(tag["id"].getType() == XmlRpc::XmlRpcValue::TypeInt);
-      int id = tag["id"];
+    std::vector<double> x = getDoubleArrayWithDefault(node, prefix + "x", ids.size(), 0.);
+    std::vector<double> y = getDoubleArrayWithDefault(node, prefix + "y", ids.size(), 0.);
+    std::vector<double> z = getDoubleArrayWithDefault(node, prefix + "z", ids.size(), 0.);
+    std::vector<double> qw = getDoubleArrayWithDefault(node, prefix + "qw", ids.size(), 1.);
+    std::vector<double> qx = getDoubleArrayWithDefault(node, prefix + "qx", ids.size(), 0.);
+    std::vector<double> qy = getDoubleArrayWithDefault(node, prefix + "qy", ids.size(), 0.);
+    std::vector<double> qz = getDoubleArrayWithDefault(node, prefix + "qz", ids.size(), 0.);
 
-      ROS_ASSERT(tag["size"].getType() == XmlRpc::XmlRpcValue::TypeDouble);
-      double size = tag["size"];
+    for (std::size_t j = 0; j < ids.size(); j++)
+    {
+      int id = static_cast<int>(ids[j]);
+      double size = sizes[j];
 
-      // Make sure that if this tag was specified also as standalone,
-      // then the sizes match
-      StandaloneTagDescription* standaloneDescription;
-      if (findStandaloneTagDescription(id, standaloneDescription, false))
-      {
-        ROS_ASSERT(size == standaloneDescription->size());
-      }
-
-      // Get this tag's pose with respect to the bundle origin
-      double x  = xmlRpcGetDoubleWithDefault(tag, "x", 0.);
-      double y  = xmlRpcGetDoubleWithDefault(tag, "y", 0.);
-      double z  = xmlRpcGetDoubleWithDefault(tag, "z", 0.);
-      double qw = xmlRpcGetDoubleWithDefault(tag, "qw", 1.);
-      double qx = xmlRpcGetDoubleWithDefault(tag, "qx", 0.);
-      double qy = xmlRpcGetDoubleWithDefault(tag, "qy", 0.);
-      double qz = xmlRpcGetDoubleWithDefault(tag, "qz", 0.);
-      Eigen::Quaterniond q_tag(qw, qx, qy, qz);
+      Eigen::Quaterniond q_tag(qw[j], qx[j], qy[j], qz[j]);
       q_tag.normalize();
       Eigen::Matrix3d R_oi = q_tag.toRotationMatrix();
 
       // Build the rigid transform from tag_j to the bundle origin
-      cv::Matx44d T_mj(R_oi(0,0), R_oi(0,1), R_oi(0,2), x,
-                       R_oi(1,0), R_oi(1,1), R_oi(1,2), y,
-                       R_oi(2,0), R_oi(2,1), R_oi(2,2), z,
+      cv::Matx44d T_mj(R_oi(0,0), R_oi(0,1), R_oi(0,2), x[j],
+                       R_oi(1,0), R_oi(1,1), R_oi(1,2), y[j],
+                       R_oi(2,0), R_oi(2,1), R_oi(2,2), z[j],
                        0,         0,         0,         1);
 
       // Register the tag member
       bundle_i.addMemberTag(id, size, T_mj);
-      ROS_INFO_STREAM(" " << j << ") id: " << id << ", size: " << size << ", "
-                          << "p = [" << x << "," << y << "," << z << "], "
-                          << "q = [" << qw << "," << qx << "," << qy << ","
-                          << qz << "]");
+      RCLCPP_INFO_STREAM(logger_, " " << j << ") id: " << id << ", size: " << size << ", "
+                          << "p = [" << x[j] << "," << y[j] << "," << z[j] << "], "
+                          << "q = [" << qw[j] << "," << qx[j] << "," << qy[j] << ","
+                          << qz[j] << "]");
     }
     descriptions.push_back(bundle_i);
   }
   return descriptions;
-}
-
-double TagDetector::xmlRpcGetDouble (XmlRpc::XmlRpcValue& xmlValue,
-                                     std::string field) const
-{
-  ROS_ASSERT((xmlValue[field].getType() == XmlRpc::XmlRpcValue::TypeDouble) ||
-             (xmlValue[field].getType() == XmlRpc::XmlRpcValue::TypeInt));
-  if (xmlValue[field].getType() == XmlRpc::XmlRpcValue::TypeInt)
-  {
-    int tmp = xmlValue[field];
-    return (double)tmp;
-  }
-  else
-  {
-    return xmlValue[field];
-  }
-}
-
-double TagDetector::xmlRpcGetDoubleWithDefault (XmlRpc::XmlRpcValue& xmlValue,
-                                                std::string field,
-                                                double defaultValue) const
-{
-  if (xmlValue.hasMember(field))
-  {
-    ROS_ASSERT((xmlValue[field].getType() == XmlRpc::XmlRpcValue::TypeDouble) ||
-        (xmlValue[field].getType() == XmlRpc::XmlRpcValue::TypeInt));
-    if (xmlValue[field].getType() == XmlRpc::XmlRpcValue::TypeInt)
-    {
-      int tmp = xmlValue[field];
-      return (double)tmp;
-    }
-    else
-    {
-      return xmlValue[field];
-    }
-  }
-  else
-  {
-    return defaultValue;
-  }
 }
 
 bool TagDetector::findStandaloneTagDescription (
@@ -779,8 +753,9 @@ bool TagDetector::findStandaloneTagDescription (
   {
     if (printWarning)
     {
-      ROS_WARN_THROTTLE(10.0, "Requested description of standalone tag ID [%d],"
-                        " but no description was found...",id);
+      RCLCPP_WARN_THROTTLE(logger_, *clock_, 10000,
+                        "Requested description of standalone tag ID [%d],"
+                        " but no description was found...", id);
     }
     return false;
   }

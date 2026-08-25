@@ -34,9 +34,7 @@
  * is TagDetector::detectTags which wraps the call to core AprilTag 2
  * algorithm, apriltag_detector_detect().
  *
- * $Revision: 1.0 $
- * $Date: 2017/12/17 13:23:14 $
- * $Author: dmalyuta $
+ * ROS 2 port.
  *
  * Originator:        Danylo Malyuta, JPL
  ******************************************************************************/
@@ -49,33 +47,35 @@
 #include <vector>
 #include <map>
 
-#include <ros/ros.h>
-#include <ros/console.h>
-#include <XmlRpcException.h>
-#include <cv_bridge/cv_bridge.h>
+#include <rclcpp/rclcpp.hpp>
+#include <cv_bridge/cv_bridge.hpp>
 #include <eigen3/Eigen/Dense>
 #include <eigen3/Eigen/Geometry>
 #include <opencv2/opencv.hpp>
 #include <opencv2/imgproc/imgproc.hpp>
 #include <opencv2/core/core.hpp>
-#include <image_transport/image_transport.h>
-#include <sensor_msgs/image_encodings.h>
-#include <tf/transform_broadcaster.h>
+#include <image_transport/image_transport.hpp>
+#include <sensor_msgs/image_encodings.hpp>
+#include <tf2_ros/transform_broadcaster.hpp>
 
 #include <apriltag.h>
 
-#include "apriltag_ros/AprilTagDetection.h"
-#include "apriltag_ros/AprilTagDetectionArray.h"
+#include "apriltag_ros/msg/april_tag_detection.hpp"
+#include "apriltag_ros/msg/april_tag_detection_array.hpp"
 
 namespace apriltag_ros
 {
 
+using AprilTagDetection = apriltag_ros::msg::AprilTagDetection;
+using AprilTagDetectionArray = apriltag_ros::msg::AprilTagDetectionArray;
+
 template<typename T>
-T getAprilTagOption(ros::NodeHandle& pnh,
+T getAprilTagOption(rclcpp::Node* node,
                     const std::string& param_name, const T & default_val)
 {
-  T param_val;
-  pnh.param<T>(param_name, param_val, default_val);
+  node->declare_parameter<T>(param_name, default_val);
+  T param_val = default_val;
+  node->get_parameter(param_name, param_val);
   return param_val;
 }
 
@@ -181,39 +181,36 @@ class TagDetector
   std::map<int, StandaloneTagDescription> standalone_tag_descriptions_;
   std::vector<TagBundleDescription > tag_bundle_descriptions_;
   bool remove_duplicates_;
-  bool run_quietly_;
   bool publish_tf_;
-  tf::TransformBroadcaster tf_pub_;
+  std::shared_ptr<tf2_ros::TransformBroadcaster> tf_pub_;
+
+  rclcpp::Logger logger_;
+  rclcpp::Clock::SharedPtr clock_;
 
  public:
 
-  TagDetector(ros::NodeHandle pnh);
+  explicit TagDetector(rclcpp::Node* node);
   ~TagDetector();
 
   // Store standalone and bundle tag descriptions
   std::map<int, StandaloneTagDescription> parseStandaloneTags(
-      XmlRpc::XmlRpcValue& standalone_tag_descriptions);
+      rclcpp::Node* node);
   std::vector<TagBundleDescription > parseTagBundles(
-      XmlRpc::XmlRpcValue& tag_bundles);
-  double xmlRpcGetDouble(
-      XmlRpc::XmlRpcValue& xmlValue, std::string field) const;
-  double xmlRpcGetDoubleWithDefault(
-      XmlRpc::XmlRpcValue& xmlValue, std::string field,
-      double defaultValue) const;
+      rclcpp::Node* node);
 
   bool findStandaloneTagDescription(
       int id, StandaloneTagDescription*& descriptionContainer,
       bool printWarning = true);
 
-  geometry_msgs::PoseWithCovarianceStamped makeTagPose(
+  geometry_msgs::msg::PoseWithCovarianceStamped makeTagPose(
       const Eigen::Matrix4d& transform,
       const Eigen::Quaternion<double> rot_quaternion,
-      const std_msgs::Header& header);
+      const std_msgs::msg::Header& header);
 
   // Detect tags in an image
   AprilTagDetectionArray detectTags(
       const cv_bridge::CvImagePtr& image,
-      const sensor_msgs::CameraInfoConstPtr& camera_info);
+      const sensor_msgs::msg::CameraInfo::ConstSharedPtr& camera_info);
 
   // Get the pose of the tag in the camera frame
   // Returns homogeneous transformation matrix [R,t;[0 0 0 1]] which
@@ -226,7 +223,7 @@ class TagDetector
       std::vector<cv::Point3d > objectPoints,
       std::vector<cv::Point2d > imagePoints,
       double fx, double fy, double cx, double cy) const;
-  
+
   void addImagePoints(apriltag_detection_t *detection,
                       std::vector<cv::Point2d >& imagePoints) const;
   void addObjectPoints(double s, cv::Matx44d T_oi,
